@@ -35,10 +35,11 @@ show_usage() {
     echo ""
     echo "Options:"
     echo "  --sudo                 Grant sudo access to the user"
+    echo "  --force-password-change Force user to change password on first login"
     echo "  --help                 Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0 john --ssh-key /path/to/key.pub --password 'somepassword' --sudo"
+    echo "  $0 john --ssh-key /path/to/key.pub --password 'somepassword' --sudo --force-password-change"
     echo "  $0 jane --ssh-key \"ssh-rsa AAAAB3NzaC1yc2E...\" --password 'anotherpassword'"
 }
 
@@ -53,6 +54,7 @@ USERNAME=""
 GRANT_SUDO=false
 SSH_KEY=""
 TEMP_PASSWORD=""
+FORCE_PASSWORD_CHANGE=false
 
 if [[ $# -eq 0 ]]; then
     print_error "No username provided"
@@ -86,6 +88,10 @@ while [[ $# -gt 0 ]]; do
                 print_error "--password requires a value"
                 exit 1
             fi
+            ;;
+        --force-password-change)
+            FORCE_PASSWORD_CHANGE=true
+            shift
             ;;
         --help)
             show_usage
@@ -132,9 +138,12 @@ useradd -m -s /bin/bash "$USERNAME"
 
 # Set the temporary password and force change on first login
 echo "$USERNAME:$TEMP_PASSWORD" | chpasswd
-chage -d 0 "$USERNAME"
 print_status "User '$USERNAME' created with the provided temporary password."
-print_warning "User will be required to change password on first login."
+
+if [[ "$FORCE_PASSWORD_CHANGE" == true ]]; then
+    chage -d 0 "$USERNAME"
+    print_warning "User will be required to change password on first login."
+fi
 
 # Create rensselaer group if it doesn't exist
 if ! getent group rensselaer > /dev/null 2>&1; then
@@ -195,6 +204,11 @@ echo "Groups: $(groups $USERNAME | cut -d: -f2)"
 echo "Sudo access: $(if [[ "$GRANT_SUDO" == true ]]; then echo "YES"; else echo "NO"; fi)"
 echo "SSH key configured: YES"
 echo "Temporary password set: YES"
+echo "Password change on first login: $(if [[ "$FORCE_PASSWORD_CHANGE" == true ]]; then echo "YES"; else echo "NO"; fi)"
 echo "----------------------------------------"
-print_warning "User must change password on first login"
+
+if [[ "$FORCE_PASSWORD_CHANGE" == true ]]; then
+    print_warning "User must change password on first login"
+fi
+
 print_status "User can now login via SSH using their private key or via password"
