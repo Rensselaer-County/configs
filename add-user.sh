@@ -1,63 +1,46 @@
+#!/bin/bash  cat /usr/local/bin/add-user
+             cat /usr/local/bin/add-user
 #!/bin/bash
 
-# Script to add users to Ubuntu 24.04 server
-# Usage: ./add-user.sh <username> --ssh-key <key_file_or_string> --password <password> [OPTIONS]
+# Advanced user creation script for Ubuntu 24.04+
+# Supports:
+#   --sudo
+#   --ssh-key <file_or_key_string>
+#   --password <password>
+#   --force-password-change
+#   --no-password (disable password login)
 
-set -e  # Exit on any error
+set -euo pipefail
 
-# Color codes for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Function to print colored output
-print_status() {
-    echo -e "${GREEN}[INFO]${NC} $1"
-}
+print_status()  { echo -e "${GREEN}[INFO]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error()   { echo -e "${RED}[ERROR]${NC} $1"; }
 
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Function to show usage
 show_usage() {
-    echo "Usage: $0 <username> --ssh-key <key> --password <password> [OPTIONS]"
-    echo ""
-    echo "Arguments:"
-    echo "  <username>             The username to create"
-    echo "  --ssh-key <key>        SSH public key (file path or key string)"
-    echo "  --password <password>  A temporary password for the user"
+    echo "Usage: add-user <username> [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  --sudo                 Grant sudo access to the user"
-    echo "  --force-password-change Force user to change password on first login"
-    echo "  --help                 Show this help message"
-    echo ""
-    echo "Examples:"
-    echo "  $0 john --ssh-key /path/to/key.pub --password 'somepassword' --sudo --force-password-change"
-    echo "  $0 jane --ssh-key \"ssh-rsa AAAAB3NzaC1yc2E...\" --password 'anotherpassword'"
+    echo "  --sudo                        Grant sudo access"
+    echo "  --ssh-key <key|file>          SSH public key string or file"
+    echo "  --password <password>         Set specific password"
+    echo "  --force-password-change       Force password change on first login"
+    echo "  --no-password                 Disable password authentication"
+    echo "  --help                        Show this help"
 }
 
-# Check if running as root
+# Root check
 if [[ $EUID -ne 0 ]]; then
-    print_error "This script must be run as root (use sudo)"
+    print_error "Run as root (sudo)"
     exit 1
 fi
 
-# Parse command line arguments
-USERNAME=""
-GRANT_SUDO=false
-SSH_KEY=""
-TEMP_PASSWORD=""
-FORCE_PASSWORD_CHANGE=false
-
-if [[ $# -eq 0 ]]; then
-    print_error "No username provided"
+if [[ $# -lt 1 ]]; then
+    print_error "Username required"
     show_usage
     exit 1
 fi
@@ -65,32 +48,32 @@ fi
 USERNAME="$1"
 shift
 
+GRANT_SUDO=false
+SSH_KEY=""
+PASSWORD=""
+FORCE_PASS_CHANGE=false
+NO_PASSWORD=false
+
 while [[ $# -gt 0 ]]; do
-    case $1 in
+    case "$1" in
         --sudo)
             GRANT_SUDO=true
             shift
             ;;
         --ssh-key)
-            if [[ -n "$2" ]]; then
-                SSH_KEY="$2"
-                shift 2
-            else
-                print_error "--ssh-key requires a value"
-                exit 1
-            fi
+            SSH_KEY="$2"
+            shift 2
             ;;
         --password)
-            if [[ -n "$2" ]]; then
-                TEMP_PASSWORD="$2"
-                shift 2
-            else
-                print_error "--password requires a value"
-                exit 1
-            fi
+            PASSWORD="$2"
+            shift 2
             ;;
         --force-password-change)
-            FORCE_PASSWORD_CHANGE=true
+            FORCE_PASS_CHANGE=true
+            shift
+            ;;
+        --no-password)
+            NO_PASSWORD=true
             shift
             ;;
         --help)
@@ -105,110 +88,86 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate username
+# Username validation
 if [[ ! "$USERNAME" =~ ^[a-z][-a-z0-9_]*$ ]]; then
-    print_error "Invalid username. Username must start with a lowercase letter and contain only lowercase letters, numbers, hyphens, and underscores."
+    print_error "Invalid username format"
     exit 1
 fi
 
-# Check for SSH key
-if [[ -z "$SSH_KEY" ]]; then
-    print_error "SSH key is required. Use the --ssh-key option."
-    show_usage
-    exit 1
-fi
-
-# Check for temporary password
-if [[ -z "$TEMP_PASSWORD" ]]; then
-    print_error "Temporary password is required. Use the --password option."
-    show_usage
-    exit 1
-fi
-
-# Check if user already exists
 if id "$USERNAME" &>/dev/null; then
-    print_error "User '$USERNAME' already exists"
+    print_error "User already exists"
     exit 1
 fi
 
 print_status "Creating user '$USERNAME'..."
-
-# Create the user with home directory
 useradd -m -s /bin/bash "$USERNAME"
 
-# Set the temporary password and force change on first login
-echo "$USERNAME:$TEMP_PASSWORD" | chpasswd
-print_status "User '$USERNAME' created with the provided temporary password."
+# Password logic
+if [[ "$NO_PASSWORD" == true ]]; then
+    passwd -l "$USERNAME"
+    print_warning "Password login disabled"
+else
+    if [[ -z "$PASSWORD" ]]; then
+        PASSWORD=$(openssl rand -base64 16)
+        print_status "Generated random password"
+    fi
 
-if [[ "$FORCE_PASSWORD_CHANGE" == true ]]; then
-    chage -d 0 "$USERNAME"
-    print_warning "User will be required to change password on first login."
+    echo "$USERNAME:$PASSWORD" | chpasswd
+
+    if [[ "$FORCE_PASS_CHANGE" == true ]]; then
+        chage -d 0 "$USERNAME"
+        print_status "User must change password on first login"
+    fi
 fi
 
-# Create rensselaer group if it doesn't exist
-if ! getent group rensselaer > /dev/null 2>&1; then
-    print_status "Creating 'rensselaer' group..."
+# Ensure rensselaer group exists
+if ! getent group rensselaer > /dev/null; then
     groupadd rensselaer
 fi
-
-# Add user to rensselaer group
-print_status "Adding user to 'rensselaer' group..."
 usermod -a -G rensselaer "$USERNAME"
 
-# Grant sudo access if requested
+# Sudo
 if [[ "$GRANT_SUDO" == true ]]; then
-    print_status "Granting sudo access..."
     usermod -a -G sudo "$USERNAME"
 fi
 
-# Handle SSH key setup
-print_status "Setting up SSH key..."
+# SSH Key handling
+if [[ -n "$SSH_KEY" ]]; then
+    USER_HOME="/home/$USERNAME"
+    SSH_DIR="$USER_HOME/.ssh"
+    AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
 
-# Create .ssh directory
-USER_HOME="/home/$USERNAME"
-SSH_DIR="$USER_HOME/.ssh"
-AUTHORIZED_KEYS="$SSH_DIR/authorized_keys"
+    mkdir -p "$SSH_DIR"
+    touch "$AUTHORIZED_KEYS"
 
-mkdir -p "$SSH_DIR"
-
-# Determine if SSH_KEY is a file or a key string
-if [[ -f "$SSH_KEY" ]]; then
-    # It's a file path
-    if [[ -r "$SSH_KEY" ]]; then
-        cat "$SSH_KEY" >> "$AUTHORIZED_KEYS"
-        print_status "SSH key added from file: $SSH_KEY"
+    if [[ -f "$SSH_KEY" ]]; then
+        KEY_CONTENT=$(cat "$SSH_KEY")
     else
-        print_error "Cannot read SSH key file: $SSH_KEY"
-        exit 1
+        KEY_CONTENT="$SSH_KEY"
     fi
-else
-    # Assume it's a key string
-    echo "$SSH_KEY" >> "$AUTHORIZED_KEYS"
-    print_status "SSH key added from provided string"
+
+    # Prevent duplicates
+    if ! grep -qxF "$KEY_CONTENT" "$AUTHORIZED_KEYS"; then
+        echo "$KEY_CONTENT" >> "$AUTHORIZED_KEYS"
+        print_status "SSH key added"
+    else
+        print_warning "SSH key already exists"
+    fi
+
+    chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
+    chmod 700 "$SSH_DIR"
+    chmod 600 "$AUTHORIZED_KEYS"
 fi
 
-# Set proper permissions
-chown -R "$USERNAME:$USERNAME" "$SSH_DIR"
-chmod 700 "$SSH_DIR"
-chmod 600 "$AUTHORIZED_KEYS"
-
-print_status "SSH key setup completed"
-
-# Display summary
 echo ""
-print_status "User setup completed successfully!"
+print_status "User setup complete"
 echo "----------------------------------------"
 echo "Username: $USERNAME"
-echo "Home directory: /home/$USERNAME"
 echo "Groups: $(groups $USERNAME | cut -d: -f2)"
-echo "Sudo access: $(if [[ "$GRANT_SUDO" == true ]]; then echo "YES"; else echo "NO"; fi)"
-echo "SSH key configured: YES"
-echo "Temporary password set: YES"
-echo "Password change on first login: $(if [[ "$FORCE_PASSWORD_CHANGE" == true ]]; then echo "YES"; else echo "NO"; fi)"
-echo "----------------------------------------"
-
-if [[ "$FORCE_PASSWORD_CHANGE" == true ]]; then
-    print_warning "User must change password on first login"
+echo "Sudo: $GRANT_SUDO"
+echo "SSH key: $([[ -n "$SSH_KEY" ]] && echo YES || echo NO)"
+echo "Password disabled: $NO_PASSWORD"
+if [[ "$NO_PASSWORD" == false ]]; then
+    echo "Password: $PASSWORD"
 fi
-
-print_status "User can now login via SSH using their private key or via password"
+echo "----------------------------------------"
