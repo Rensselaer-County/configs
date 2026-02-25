@@ -1,5 +1,3 @@
-#!/bin/bash  cat /usr/local/bin/add-user
-             cat /usr/local/bin/add-user
 #!/bin/bash
 
 # Advanced user creation script for Ubuntu 24.04+
